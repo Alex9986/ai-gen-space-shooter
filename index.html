@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>STARFIRE</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { background: #000; width: 100%; height: 100%; overflow: hidden; touch-action: none; font-family: 'Courier New', monospace; }
+  #gameContainer { position: relative; margin: 0 auto; }
+  canvas { display: block; }
+  #ui { position: absolute; top: 12px; left: 12px; color: #fff; z-index: 10; pointer-events: none; }
+  #score { font-size: 15px; color: #7ef7ff; text-shadow: 0 0 8px #7ef7ff; letter-spacing: 2px; }
+  #lives  { font-size: 14px; color: #ff6060; margin-top: 4px; }
+  #joystickZone {
+    position: absolute; bottom: 24px; left: 24px;
+    width: 130px; height: 130px; z-index: 15; display: none;
+  }
+  #joystickBase {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: rgba(126,247,255,0.07); border: 2px solid rgba(126,247,255,0.22);
+  }
+  #joystickKnob {
+    position: absolute; width: 50px; height: 50px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, rgba(126,247,255,0.65), rgba(126,247,255,0.15));
+    border: 2px solid rgba(126,247,255,0.45);
+    top: 50%; left: 50%; transform: translate(-50%,-50%);
+    pointer-events: none; transition: left 0.04s, top 0.04s;
+  }
+  #overlay {
+    position: absolute; inset: 0; background: rgba(0,0,30,0.88);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 20; color: #fff;
+  }
+  #overlay h1 { font-size: clamp(28px,9vw,42px); color: #7ef7ff; text-shadow: 0 0 20px #7ef7ff,0 0 40px #7ef7ff44; letter-spacing: 8px; margin-bottom: 20px; }
+  .hint { font-size: clamp(11px,3.2vw,14px); color: #aaa; margin: 5px 0; letter-spacing: 1px; text-align: center; padding: 0 16px; }
+  #startBtn {
+    margin-top: 28px; padding: 14px 44px; background: transparent;
+    border: 2px solid #7ef7ff; color: #7ef7ff; font-family: inherit;
+    font-size: clamp(14px,4.5vw,18px); letter-spacing: 4px; cursor: pointer;
+    transition: all .2s; border-radius: 2px;
+  }
+  #startBtn:hover, #startBtn:active { background: #7ef7ff22; box-shadow: 0 0 20px #7ef7ff; }
+  #finalScore { font-size: clamp(16px,5vw,22px); color: #ffdd57; margin: 12px 0; display: none; }
+</style>
+</head>
+<body>
+<div id="gameContainer">
+  <canvas id="canvas"></canvas>
+  <div id="ui">
+    <div id="score">SCORE: 0</div>
+    <div id="lives">❤ ❤ ❤</div>
+  </div>
+  <div id="joystickZone">
+    <div id="joystickBase"></div>
+    <div id="joystickKnob"></div>
+  </div>
+  <div id="overlay">
+    <h1>STARFIRE</h1>
+    <p class="hint" id="controlHint">Arrow Keys / WASD or drag mouse to move</p>
+    <p class="hint">Missiles fire automatically</p>
+    <div id="finalScore"></div>
+    <button id="startBtn">LAUNCH</button>
+  </div>
+</div>
+
+<script>
+// ── Responsive sizing ─────────────────────────────────────────────
+const container = document.getElementById('gameContainer');
+const canvas    = document.getElementById('canvas');
+const ctx       = canvas.getContext('2d');
+const W = 400, H = 600;
+let scale = 1;
+
+function resize() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let w = vw, h = vw * (H / W);
+  if (h > vh) { h = vh; w = h * (W / H); }
+  scale = w / W;
+  canvas.width = W; canvas.height = H;
+  canvas.style.width  = w + 'px';
+  canvas.style.height = h + 'px';
+  container.style.width  = w + 'px';
+  container.style.height = h + 'px';
+  container.style.marginTop = ((vh - h) / 2) + 'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Touch detection ───────────────────────────────────────────────
+const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+const joystickZone  = document.getElementById('joystickZone');
+const joystickKnob  = document.getElementById('joystickKnob');
+if (isTouchDevice) {
+  joystickZone.style.display = 'block';
+  document.getElementById('controlHint').textContent = 'Drag joystick (bottom-left) to move';
+}
+
+// ── Stars ─────────────────────────────────────────────────────────
+const stars = Array.from({length: 130}, () => ({
+  x: Math.random()*W, y: Math.random()*H,
+  s: Math.random()*2+0.3, spd: Math.random()*1.2+0.3, bright: Math.random()
+}));
+
+// ── State ─────────────────────────────────────────────────────────
+let score, lives, gameRunning = false, animId;
+let player, missiles, enemies, explosions, keys, shootTimer, enemyTimer, enemySpeed;
+
+const joy = { active: false, id: null, baseX: 0, baseY: 0, dx: 0, dy: 0 };
+const JOY_R = 40;
+
+function initGame() {
+  player = { x: W/2, y: H-90, w: 40, h: 50, speed: 5 };
+  missiles = []; enemies = []; explosions = [];
+  keys = {}; joy.dx = 0; joy.dy = 0; joy.active = false;
+  shootTimer = 0; enemyTimer = 0; enemySpeed = 1.2;
+  score = 0; lives = 3;
+  updateUI();
+}
+
+function updateUI() {
+  document.getElementById('score').textContent = 'SCORE: ' + score;
+  document.getElementById('lives').textContent = '❤ '.repeat(Math.max(lives,0)).trim() || '✕';
+}
+
+// ── Draw helpers ──────────────────────────────────────────────────
+function drawPlayer(x, y) {
+  ctx.save(); ctx.translate(x, y);
+  const grd = ctx.createRadialGradient(0,26,2,0,26,18);
+  grd.addColorStop(0,'rgba(255,120,0,0.9)'); grd.addColorStop(1,'rgba(255,60,0,0)');
+  ctx.fillStyle = grd; ctx.beginPath(); ctx.ellipse(0,26,10,18,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#e8e8f0'; ctx.beginPath(); ctx.moveTo(0,-25); ctx.lineTo(14,10); ctx.lineTo(10,20); ctx.lineTo(-10,20); ctx.lineTo(-14,10); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#7ef7ff'; ctx.beginPath(); ctx.moveTo(0,-18); ctx.lineTo(6,0); ctx.lineTo(-6,0); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#cc3322';
+  ctx.beginPath(); ctx.moveTo(14,10); ctx.lineTo(24,22); ctx.lineTo(10,20); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-14,10); ctx.lineTo(-24,22); ctx.lineTo(-10,20); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function drawEnemy(e) {
+  ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(Math.PI);
+  ctx.fillStyle = '#8b5e3c'; ctx.beginPath(); ctx.moveTo(0,-20); ctx.lineTo(12,8); ctx.lineTo(8,18); ctx.lineTo(-8,18); ctx.lineTo(-12,8); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ff9933'; ctx.beginPath(); ctx.moveTo(0,-14); ctx.lineTo(5,2); ctx.lineTo(-5,2); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#6b3c1c';
+  ctx.beginPath(); ctx.moveTo(12,8); ctx.lineTo(22,18); ctx.lineTo(8,18); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-12,8); ctx.lineTo(-22,18); ctx.lineTo(-8,18); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function drawMissile(m) {
+  ctx.save(); ctx.translate(m.x, m.y);
+  const grad = ctx.createLinearGradient(0,-18,0,6);
+  grad.addColorStop(0,'#fff'); grad.addColorStop(0.3,'#ff4444'); grad.addColorStop(1,'rgba(255,80,0,0)');
+  ctx.fillStyle = grad; ctx.beginPath(); ctx.roundRect(-2.5,-18,5,24,2); ctx.fill();
+  ctx.restore();
+}
+
+function drawExplosion(e) {
+  const p = e.age/e.maxAge, r = e.r*(1-p*0.5);
+  ctx.save(); ctx.globalAlpha = 1-p;
+  const grd = ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,r);
+  grd.addColorStop(0,'#fff'); grd.addColorStop(0.3,'#ffcc00'); grd.addColorStop(0.7,'#ff4400'); grd.addColorStop(1,'rgba(255,0,0,0)');
+  ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(e.x,e.y,r,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawStars(delta) {
+  for (const s of stars) {
+    s.y += s.spd * delta * 60 * 0.016;
+    if (s.y > H) { s.y = 0; s.x = Math.random()*W; }
+    ctx.fillStyle = `rgba(255,255,255,${0.4+s.bright*0.6})`;
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+  }
+}
+
+function updateJoystickKnob() {
+  const cx = 65 + joy.dx * JOY_R;
+  const cy = 65 + joy.dy * JOY_R;
+  joystickKnob.style.left = (cx - 25) + 'px';
+  joystickKnob.style.top  = (cy - 25) + 'px';
+}
+
+// ── Game loop ─────────────────────────────────────────────────────
+let lastTime = 0;
+function gameLoop(ts) {
+  const delta = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+
+  const bgGrad = ctx.createLinearGradient(0,0,0,H);
+  bgGrad.addColorStop(0,'#060a1a'); bgGrad.addColorStop(1,'#0d1530');
+  ctx.fillStyle = bgGrad; ctx.fillRect(0,0,W,H);
+  drawStars(delta);
+
+  // Input
+  let dx = 0, dy = 0;
+  if (keys['ArrowLeft']  || keys['a']) dx -= 1;
+  if (keys['ArrowRight'] || keys['d']) dx += 1;
+  if (keys['ArrowUp']    || keys['w']) dy -= 1;
+  if (keys['ArrowDown']  || keys['s']) dy += 1;
+  dx += joy.dx; dy += joy.dy;
+  const mag = Math.sqrt(dx*dx+dy*dy);
+  if (mag > 1) { dx /= mag; dy /= mag; }
+  const spd = player.speed * delta * 60 * 0.016 * 60;
+  player.x = Math.max(player.w/2, Math.min(W-player.w/2, player.x + dx*spd));
+  player.y = Math.max(player.h/2, Math.min(H-player.h/2, player.y + dy*spd));
+
+  // Shoot
+  shootTimer += delta;
+  if (shootTimer > 0.28) {
+    missiles.push({x:player.x-6, y:player.y-20, spd:9});
+    missiles.push({x:player.x+6, y:player.y-20, spd:9});
+    shootTimer = 0;
+  }
+
+  // Enemies
+  enemyTimer += delta;
+  if (enemyTimer > Math.max(0.55, 2.0 - score*0.01)) {
+    enemies.push({x:30+Math.random()*(W-60), y:-30, spd:enemySpeed, w:28, h:36});
+    enemyTimer = 0;
+    enemySpeed = Math.min(3.8, 1.2 + score*0.005);
+  }
+
+  for (const m of missiles) m.y -= m.spd*delta*60*0.016*60;
+  missiles = missiles.filter(m => m.y > -20);
+  for (const e of enemies) e.y += e.spd*delta*60*0.016*60;
+
+  // Missile ↔ enemy
+  outer: for (let i=missiles.length-1; i>=0; i--) {
+    for (let j=enemies.length-1; j>=0; j--) {
+      const m=missiles[i], e=enemies[j];
+      if (Math.abs(m.x-e.x)<e.w/2 && Math.abs(m.y-e.y)<e.h/2) {
+        explosions.push({x:e.x,y:e.y,r:36,age:0,maxAge:0.5});
+        enemies.splice(j,1); missiles.splice(i,1);
+        score+=10; updateUI(); continue outer;
+      }
+    }
+  }
+
+  // Enemy ↔ player
+  for (let j=enemies.length-1; j>=0; j--) {
+    const e=enemies[j];
+    if (e.y>H+40) { enemies.splice(j,1); continue; }
+    if (Math.abs(e.x-player.x)<(e.w/2+player.w/2-8) && Math.abs(e.y-player.y)<(e.h/2+player.h/2-8)) {
+      explosions.push({x:e.x,y:e.y,r:42,age:0,maxAge:0.6});
+      enemies.splice(j,1); lives--; updateUI();
+      if (lives<=0) { endGame(); return; }
+    }
+  }
+
+  for (const e of explosions) { drawExplosion(e); e.age+=delta; }
+  explosions = explosions.filter(e => e.age<e.maxAge);
+
+  for (const e of enemies) drawEnemy(e);
+  for (const m of missiles) drawMissile(m);
+  drawPlayer(player.x, player.y);
+
+  if (isTouchDevice) updateJoystickKnob();
+
+  animId = requestAnimationFrame(gameLoop);
+}
+
+// ── Joystick ──────────────────────────────────────────────────────
+joystickZone.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  joy.active = true; joy.id = t.identifier;
+  const r = joystickZone.getBoundingClientRect();
+  joy.baseX = r.left + r.width/2;
+  joy.baseY = r.top  + r.height/2;
+  joy.dx = 0; joy.dy = 0;
+}, {passive:false});
+
+joystickZone.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier !== joy.id) continue;
+    let dx = (t.clientX - joy.baseX) / (JOY_R * scale);
+    let dy = (t.clientY - joy.baseY) / (JOY_R * scale);
+    const m = Math.sqrt(dx*dx+dy*dy);
+    if (m>1) { dx/=m; dy/=m; }
+    joy.dx = dx; joy.dy = dy;
+  }
+}, {passive:false});
+
+function joyEnd(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === joy.id) { joy.active=false; joy.dx=0; joy.dy=0; joy.id=null; }
+  }
+}
+joystickZone.addEventListener('touchend',   joyEnd, {passive:false});
+joystickZone.addEventListener('touchcancel',joyEnd, {passive:false});
+
+// Mouse drag to move (desktop)
+canvas.addEventListener('mousemove', e => {
+  if (!gameRunning) return;
+  const rect = canvas.getBoundingClientRect();
+  player.x = (e.clientX - rect.left) / scale;
+  player.y = (e.clientY - rect.top)  / scale;
+});
+
+// Keyboard
+document.addEventListener('keydown', e => { if (gameRunning) { keys[e.key]=true; e.preventDefault(); }});
+document.addEventListener('keyup',   e => { keys[e.key]=false; });
+
+// ── Start / End ───────────────────────────────────────────────────
+function startGame() {
+  document.getElementById('overlay').style.display = 'none';
+  initGame(); gameRunning = true;
+  lastTime = performance.now();
+  animId = requestAnimationFrame(gameLoop);
+}
+
+function endGame() {
+  gameRunning = false; cancelAnimationFrame(animId);
+  joy.dx=0; joy.dy=0; joy.active=false;
+  const overlay = document.getElementById('overlay');
+  overlay.style.display = 'flex';
+  overlay.querySelector('h1').textContent = 'GAME OVER';
+  const fs = document.getElementById('finalScore');
+  fs.style.display='block'; fs.textContent='SCORE: '+score;
+  document.getElementById('startBtn').textContent = 'RETRY';
+}
+
+const startBtn = document.getElementById('startBtn');
+startBtn.addEventListener('click', startGame);
+startBtn.addEventListener('touchend', e => { e.preventDefault(); startGame(); });
+</script>
+</body>
+</html>
