@@ -15,21 +15,7 @@
   #ui { position: absolute; top: 12px; left: 12px; color: #fff; z-index: 10; pointer-events: none; }
   #score { font-size: 15px; color: #7ef7ff; text-shadow: 0 0 8px #7ef7ff; letter-spacing: 2px; }
   #lives  { font-size: 14px; color: #ff6060; margin-top: 4px; }
-  #joystickZone {
-    position: absolute; bottom: 24px; left: 24px;
-    width: 130px; height: 130px; z-index: 15; display: none;
-  }
-  #joystickBase {
-    position: absolute; inset: 0; border-radius: 50%;
-    background: rgba(126,247,255,0.07); border: 2px solid rgba(126,247,255,0.22);
-  }
-  #joystickKnob {
-    position: absolute; width: 50px; height: 50px; border-radius: 50%;
-    background: radial-gradient(circle at 35% 35%, rgba(126,247,255,0.65), rgba(126,247,255,0.15));
-    border: 2px solid rgba(126,247,255,0.45);
-    top: 50%; left: 50%; transform: translate(-50%,-50%);
-    pointer-events: none; transition: left 0.04s, top 0.04s;
-  }
+
   #overlay {
     position: absolute; inset: 0; background: rgba(0,0,30,0.88);
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -54,10 +40,7 @@
     <div id="score">SCORE: 0</div>
     <div id="lives">❤ ❤ ❤</div>
   </div>
-  <div id="joystickZone">
-    <div id="joystickBase"></div>
-    <div id="joystickKnob"></div>
-  </div>
+
   <div id="overlay">
     <h1>STARFIRE</h1>
     <p class="hint" id="controlHint">Arrow Keys / WASD or drag mouse to move</p>
@@ -92,11 +75,8 @@ window.addEventListener('resize', resize);
 
 // ── Touch detection ───────────────────────────────────────────────
 const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-const joystickZone  = document.getElementById('joystickZone');
-const joystickKnob  = document.getElementById('joystickKnob');
 if (isTouchDevice) {
-  joystickZone.style.display = 'block';
-  document.getElementById('controlHint').textContent = 'Drag joystick (bottom-left) to move';
+  document.getElementById('controlHint').textContent = 'Touch & drag to move your ship';
 }
 
 // ── Stars ─────────────────────────────────────────────────────────
@@ -109,13 +89,12 @@ const stars = Array.from({length: 130}, () => ({
 let score, lives, gameRunning = false, animId;
 let player, missiles, enemies, explosions, keys, shootTimer, enemyTimer, enemySpeed;
 
-const joy = { active: false, id: null, baseX: 0, baseY: 0, dx: 0, dy: 0 };
-const JOY_R = 40;
+
 
 function initGame() {
   player = { x: W/2, y: H-90, w: 40, h: 50, speed: 5 };
   missiles = []; enemies = []; explosions = [];
-  keys = {}; joy.dx = 0; joy.dy = 0; joy.active = false;
+  keys = {};
   shootTimer = 0; enemyTimer = 0; enemySpeed = 1.2;
   score = 0; lives = 3;
   updateUI();
@@ -176,13 +155,6 @@ function drawStars(delta) {
   }
 }
 
-function updateJoystickKnob() {
-  const cx = 65 + joy.dx * JOY_R;
-  const cy = 65 + joy.dy * JOY_R;
-  joystickKnob.style.left = (cx - 25) + 'px';
-  joystickKnob.style.top  = (cy - 25) + 'px';
-}
-
 // ── Game loop ─────────────────────────────────────────────────────
 let lastTime = 0;
 function gameLoop(ts) {
@@ -200,7 +172,6 @@ function gameLoop(ts) {
   if (keys['ArrowRight'] || keys['d']) dx += 1;
   if (keys['ArrowUp']    || keys['w']) dy -= 1;
   if (keys['ArrowDown']  || keys['s']) dy += 1;
-  dx += joy.dx; dy += joy.dy;
   const mag = Math.sqrt(dx*dx+dy*dy);
   if (mag > 1) { dx /= mag; dy /= mag; }
   const spd = player.speed * delta * 60 * 0.016 * 60;
@@ -257,42 +228,29 @@ function gameLoop(ts) {
   for (const m of missiles) drawMissile(m);
   drawPlayer(player.x, player.y);
 
-  if (isTouchDevice) updateJoystickKnob();
+
 
   animId = requestAnimationFrame(gameLoop);
 }
 
-// ── Joystick ──────────────────────────────────────────────────────
-joystickZone.addEventListener('touchstart', e => {
+// Touch to move — ship follows finger
+canvas.addEventListener('touchstart', e => {
   e.preventDefault();
-  const t = e.changedTouches[0];
-  joy.active = true; joy.id = t.identifier;
-  const r = joystickZone.getBoundingClientRect();
-  joy.baseX = r.left + r.width/2;
-  joy.baseY = r.top  + r.height/2;
-  joy.dx = 0; joy.dy = 0;
-}, {passive:false});
+  if (!gameRunning) return;
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  player.x = (t.clientX - rect.left) / scale;
+  player.y = (t.clientY - rect.top)  / scale;
+}, {passive: false});
 
-joystickZone.addEventListener('touchmove', e => {
+canvas.addEventListener('touchmove', e => {
   e.preventDefault();
-  for (const t of e.changedTouches) {
-    if (t.identifier !== joy.id) continue;
-    let dx = (t.clientX - joy.baseX) / (JOY_R * scale);
-    let dy = (t.clientY - joy.baseY) / (JOY_R * scale);
-    const m = Math.sqrt(dx*dx+dy*dy);
-    if (m>1) { dx/=m; dy/=m; }
-    joy.dx = dx; joy.dy = dy;
-  }
-}, {passive:false});
-
-function joyEnd(e) {
-  e.preventDefault();
-  for (const t of e.changedTouches) {
-    if (t.identifier === joy.id) { joy.active=false; joy.dx=0; joy.dy=0; joy.id=null; }
-  }
-}
-joystickZone.addEventListener('touchend',   joyEnd, {passive:false});
-joystickZone.addEventListener('touchcancel',joyEnd, {passive:false});
+  if (!gameRunning) return;
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  player.x = (t.clientX - rect.left) / scale;
+  player.y = (t.clientY - rect.top)  / scale;
+}, {passive: false});
 
 // Mouse drag to move (desktop)
 canvas.addEventListener('mousemove', e => {
@@ -316,7 +274,6 @@ function startGame() {
 
 function endGame() {
   gameRunning = false; cancelAnimationFrame(animId);
-  joy.dx=0; joy.dy=0; joy.active=false;
   const overlay = document.getElementById('overlay');
   overlay.style.display = 'flex';
   overlay.querySelector('h1').textContent = 'GAME OVER';
